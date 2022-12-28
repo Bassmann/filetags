@@ -1,5 +1,7 @@
 * filetags
 
+This is a quite trivial fork of Karl Voit's awesome tool. I just happen to prefer no spaces in filenames and hence made corresponding changes.
+
 #+BEGIN_HTML
 <a href="https://karl-voit.at/demo-filetags-tagging">
 <img src="https://raw.githubusercontent.com/novoid/screencasts/master/file_management/filetags_tagging.gif" />
