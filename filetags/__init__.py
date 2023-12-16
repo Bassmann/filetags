@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-PROG_VERSION = "Time-stamp: <2022-01-24 12:38:12 vk>"
+PROG_VERSION = "Time-stamp: <2023-11-10 18:44:48 vk>"
 
 # TODO:
 # - fix parts marked with «FIXXME»
@@ -91,12 +91,14 @@ if platform.system() == "Windows":
     TTY_HEIGHT, TTY_WIDTH = 80, 80  # fall-back values
     IS_WINDOWS = True
 else:
-    try:
-        TTY_HEIGHT, TTY_WIDTH = [
-            int(x) for x in os.popen("stty size", "r").read().split()
-        ]
-    except ValueError:
-        TTY_HEIGHT, TTY_WIDTH = 80, 80  # fall-back values
+    # check to avoid stty error when stdin is not a terminal.
+    if sys.stdin.isatty():
+        try:
+            TTY_HEIGHT, TTY_WIDTH = [int(x) for x in os.popen('stty size', 'r').read().split()]
+        except ValueError:
+            TTY_HEIGHT, TTY_WIDTH = 80, 80  # fall-back values
+    else:
+        TTY_HEIGHT, TTY_WIDTH = 80, 80
 
 max_file_length = 0  # will be set after iterating over source files182
 
@@ -243,13 +245,12 @@ parser.add_argument(
     help="Enable dryrun mode: just simulate what would happen, do not modify files",
 )
 
-parser.add_argument(
-    "--hardlinks",
-    dest="hardlinks",
-    action="store_true",
-    help="Use hard links instead of symbolic links. This is ignored on Windows systems. "
-    + "Note that renaming link originals when tagging does not work with hardlinks.",
-)
+parser.add_argument("--overwrite", dest="overwrite", action="store_true",
+                    help="If a link is about to be created and a previous file/link exists, the old will be deleted if this is enabled.")
+
+parser.add_argument("--hardlinks", dest="hardlinks", action="store_true",
+                    help="Use hard links instead of symbolic links. This is ignored on Windows systems. " +
+                    "Note that renaming link originals when tagging does not work with hardlinks.")
 
 parser.add_argument(
     "-f",
@@ -1059,9 +1060,9 @@ def handle_file_and_optional_link(orig_filename, tags, do_remove, do_filter, dry
     """
 
     num_errors = 0
-    logging.debug(
-        'handle_file_and_optional_link("' + orig_filename + '") …  ' + "★" * 20
-    )
+    original_dir = os.getcwd()
+    logging.debug("handle_file_and_optional_link(\"" + orig_filename + "\") …  " + '★' * 20)
+    logging.debug('handle_file_and_optional_link: original directory = ' + original_dir)
 
     if os.path.isdir(orig_filename):
         logging.warning(
@@ -1243,9 +1244,10 @@ def handle_file_and_optional_link(orig_filename, tags, do_remove, do_filter, dry
 
     new_filename = handle_file(filename, tags, do_remove, do_filter, dryrun)
 
-    logging.debug(
-        'handle_file_and_optional_link("' + orig_filename + '") FINISHED  ' + "★" * 20
-    )
+    logging.debug('handle_file_and_optional_link: switching back to original directory = ' + original_dir)
+    os.chdir(original_dir)  # reset working directory
+    logging.debug("handle_file_and_optional_link(\"" + orig_filename + "\") FINISHED  " + '★' * 20)
+
     return num_errors, new_filename
 
 
@@ -1266,12 +1268,27 @@ def create_link(source, destination):
     The command link option "--hardlinks" switches to hardlinks. This
     is ignored on Windows systems.
 
+    If the destination file exists, an error is shown unless the --overwrite
+    option is used which results in deleting the old file and replacing with
+    the new link.
+    
     @param source: a file name of the source, an existing file
     @param destination: a file name for the link which is about to be created
 
     """
 
-    logging.debug("create_link(" + source + ", " + destination + ") called")
+    logging.debug('create_link(' + source + ', ' + destination + ') called')
+
+    if os.path.exists(destination):
+        if options.overwrite:
+            logging.debug('destination exists and overwrite flag set → deleting old file')
+            os.remove(destination)
+        else:
+            logging.debug('destination exists and overwrite flag is not set → report error to user')
+            error_exit(21, 'Trying to create new link but found an old file with same name. ' +
+                       'If you want me to overwrite older files, use the "--overwrite" option. Culprit: ' + destination)
+    
+
     if IS_WINDOWS:
         # do lnk-files instead of symlinks:
         shell = win32com.client.Dispatch("WScript.Shell")
@@ -1293,10 +1310,8 @@ def create_link(source, destination):
                 # use good old high-performing hard links:
                 os.link(source, destination)
             except OSError:
-                logging.warning(
-                    "Due to cross-device links, I had to use a symbolic link as a fall-back for: "
-                    + source
-                )
+                logging.warning('Due to cross-device links, I had to use a symbolic link as a fall-back for: ' + source)
+                os.symlink(source, destination)
         else:
             # use good old high-performing symbolic links:
             os.symlink(source, destination)
@@ -2097,9 +2112,9 @@ def locate_file_in_cwd_and_parent_directories(startfile, filename):
         % (startfile, filename)
     )
 
-    filename_in_startfile_dir = os.path.join(
-        os.path.dirname(os.path.abspath(startfile)), filename
-    )
+    original_dir = os.getcwd()
+    filename_in_startfile_dir = os.path.join(os.path.dirname(os.path.abspath(startfile)), filename)
+
     filename_in_startdir = os.path.join(startfile, filename)
     if (
         startfile
@@ -2158,18 +2173,15 @@ def locate_file_in_cwd_and_parent_directories(startfile, filename):
             os.chdir(parent_dir)
             filename_to_look_for = os.path.abspath(os.path.join(os.getcwd(), filename))
             if os.path.isfile(filename_to_look_for):
-                logging.debug(
-                    'locate_file_in_cwd_and_parent_directories: found "%s" in directory "%s" ........'
-                    % (filename, parent_dir)
-                )
-                os.chdir(starting_dir)
+                logging.debug('locate_file_in_cwd_and_parent_directories: found \"%s\" in directory \"%s\" ........' %
+                              (filename, parent_dir))
+                os.chdir(original_dir)
                 return filename_to_look_for
             parent_dir = os.path.abspath(os.path.join(os.getcwd(), os.pardir))
-        os.chdir(starting_dir)
-        logging.debug(
-            'locate_file_in_cwd_and_parent_directories: did NOT find "%s" in current directory or any parent directory'
-            % filename
-        )
+            
+        os.chdir(original_dir)
+        logging.debug('locate_file_in_cwd_and_parent_directories: did NOT find \"%s\" in current directory or any parent directory' %
+                      filename)
         return False
 
 
@@ -2650,18 +2662,10 @@ def assert_empty_tagfilter_directory(directory):
     @param directory: the directory to use as starting directory
     """
 
-    if (
-        options.tagtrees_directory
-        and os.path.isdir(directory)
-        and os.listdir(directory)
-    ):
-        error_exit(
-            13,
-            "The given tagtrees directory "
-            + directory
-            + " is not empty. Aborting here instead "
-            + "of removing its content without asking. Please free it up yourself and try again.",
-        )
+    if options.tagtrees_directory and os.path.isdir(directory) and os.listdir(directory) and not options.overwrite:
+        error_exit(13, 'The given tagtrees directory ' + directory +
+                   ' is not empty. Aborting here instead ' +
+                   'of removing its content without asking. Please free it up yourself and try again.')
 
     if not os.path.isdir(directory):
         logging.debug(
@@ -3513,20 +3517,17 @@ def main():
                     - set(tags_intersection_of_files)
                 )
 
-                logging.debug("deriving upto9_tags_for_shortcuts ...")
+                logging.debug('deriving upto9_tags_for_shortcuts ...')
+                logging.debug('files[0] = ' + files[0])
+                logging.debug('startdir = ' + os.path.dirname(os.path.abspath(os.path.basename(files[0]))))
                 upto9_tags_for_shortcuts = sorted(
                     get_upto_nine_keys_of_dict_with_highest_value(
                         get_tags_from_files_and_subfolders(
-                            startdir=os.path.dirname(os.path.abspath(files[0]))
-                        ),
-                        tags_intersection_of_files,
-                        omit_filetags_donotsuggest_tags=True,
-                    )
-                )
-                logging.debug("derived upto9_tags_for_shortcuts")
-            logging.debug(
-                "derived vocabulary with %i entries" % len(vocabulary)
-            )  # using default vocabulary which was generate above
+                            startdir=os.path.dirname(
+                                os.path.abspath(os.path.basename(files[0])))),
+                        tags_intersection_of_files, omit_filetags_donotsuggest_tags=True))
+                logging.debug('derived upto9_tags_for_shortcuts')
+            logging.debug('derived vocabulary with %i entries' % len(vocabulary))  # using default vocabulary which was generate above
 
         # ==================== Interactive asking user for tags ============================= ##
         tags_from_userinput = ask_for_tags(
@@ -3589,6 +3590,8 @@ def main():
 
         if not os.path.exists(filename):
             logging.error('File "' + filename + '" does not exist. Skipping this one …')
+            logging.debug('problematic filename: ' + filename)
+            logging.debug('os.getcwd() = ' + os.getcwd())
             num_errors += 1
 
         elif is_broken_link(filename):
